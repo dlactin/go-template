@@ -1,0 +1,74 @@
+name: Build and Publish Image
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the main branch
+        uses: actions/checkout@v5
+        with:
+          ref: 'main'
+          fetch-depth: '0'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get tag name from commit
+        id: get_tag
+        # This will get the tag (e.g., v1.2.3) associated with the checked-out commit
+        # It will fail if no exact tag matches, so we use `|| echo ''` to prevent the step from failing
+        run: |
+          echo "tag=$(git describe --tags --exact-match ${{ github.event.workflow_run.head_sha }} 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # 1. Use the tag we just found, if it exists (e.g., v1.2.3)
+            type=raw,value=${{ steps.get_tag.outputs.tag }},enable=${{ steps.get_tag.outputs.tag != '' }}
+
+            # 2. Always use 'latest'
+            # This is a fallback in case git describe failed
+            type=raw,value=latest,enable=true
+
+            # 3. Also tag with the short SHA for traceability
+            type=sha,format=short,prefix=,enable=${{ steps.get_tag.outputs.tag == '' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
